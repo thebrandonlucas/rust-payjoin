@@ -1,12 +1,13 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use app::config::Config;
 use app::App as AppTrait;
-use clap::{arg, value_parser, Arg, ArgMatches, Command};
-use payjoin::bitcoin::amount::ParseAmountError;
-use payjoin::bitcoin::{Amount, FeeRate};
+use clap::{arg, value_parser, Arg, ArgMatches, Command, Parser};
+use cli::{parse_amount_in_sat, parse_fee_rate_in_sat_per_vb, Cli, Commands};
+use payjoin::bitcoin::FeeRate;
 use url::Url;
 
 mod app;
+mod cli;
 mod db;
 
 #[cfg(not(any(feature = "v1", feature = "v2")))]
@@ -16,11 +17,11 @@ compile_error!("At least one of the features ['v1', 'v2'] must be enabled");
 async fn main() -> Result<()> {
     env_logger::init();
 
-    let matches = cli();
-    let config = Config::new(&matches)?;
+    let cli = Cli::parse();
+    let config = Config::new(&cli)?;
 
     #[allow(clippy::if_same_then_else)]
-    let app: Box<dyn AppTrait> = if matches.get_flag("bip78") {
+    let app: Box<dyn AppTrait> = if cli.flags.bip78.unwrap_or(false) {
         #[cfg(feature = "v1")]
         {
             Box::new(crate::app::v1::App::new(config)?)
@@ -31,7 +32,7 @@ async fn main() -> Result<()> {
                 "BIP78 (v1) support is not enabled in this build. Recompile with --features v1"
             )
         }
-    } else if matches.get_flag("bip77") {
+    } else if cli.flags.bip77.unwrap_or(false) {
         #[cfg(feature = "v2")]
         {
             Box::new(crate::app::v2::App::new(config)?)
@@ -57,29 +58,20 @@ async fn main() -> Result<()> {
         }
     };
 
-    match matches.subcommand() {
-        Some(("send", sub_matches)) => {
-            let bip21 = sub_matches.get_one::<String>("BIP21").context("Missing BIP21 argument")?;
-            let fee_rate = sub_matches
-                .get_one::<FeeRate>("fee_rate")
-                .context("Missing --fee-rate argument")?;
-            app.send_payjoin(bip21, *fee_rate).await?;
+    match &cli.command {
+        Commands::Send { bip21, fee_rate } => {
+            let fee = fee_rate
+                .unwrap_or_else(|| FeeRate::from_sat_per_vb(2).unwrap_or(FeeRate::BROADCAST_MIN));
+            app.send_payjoin(bip21, fee).await?;
         }
-        Some(("receive", sub_matches)) => {
-            let amount =
-                sub_matches.get_one::<Amount>("AMOUNT").context("Missing AMOUNT argument")?;
+        Commands::Receive { amount, .. } => {
             app.receive_payjoin(*amount).await?;
         }
         #[cfg(feature = "v2")]
-        Some(("resume", _)) => {
-            if matches.get_flag("bip78") {
-                anyhow::bail!("Resume command is only available with BIP77 (v2)");
-            }
-            println!("resume");
+        Commands::Resume => {
             app.resume_payjoins().await?;
         }
-        _ => unreachable!(), // If all subcommands are defined above, anything else is unreachabe!()
-    }
+    };
 
     Ok(())
 }
@@ -205,14 +197,4 @@ fn cli() -> ArgMatches {
 
     cmd = cmd.subcommand(receive_cmd);
     cmd.get_matches()
-}
-
-fn parse_amount_in_sat(s: &str) -> Result<Amount, ParseAmountError> {
-    Amount::from_str_in(s, payjoin::bitcoin::Denomination::Satoshi)
-}
-
-fn parse_fee_rate_in_sat_per_vb(s: &str) -> Result<FeeRate, std::num::ParseFloatError> {
-    let fee_rate_sat_per_vb: f32 = s.parse()?;
-    let fee_rate_sat_per_kwu = fee_rate_sat_per_vb * 250.0_f32;
-    Ok(FeeRate::from_sat_per_kwu(fee_rate_sat_per_kwu.ceil() as u64))
 }

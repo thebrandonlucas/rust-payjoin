@@ -192,6 +192,8 @@ mod e2e {
             services.wait_for_services_ready().await?;
             let ohttp_keys = services.fetch_ohttp_keys().await?;
             let ohttp_keys_path = temp_dir.join("ohttp_keys");
+            println!("ohttp keys: {ohttp_keys:#?}");
+            println!("ohttp path: {ohttp_keys_path:?}");
             tokio::fs::write(&ohttp_keys_path, ohttp_keys.encode()?).await?;
 
             let receiver_rpchost = format!("http://{}/wallet/receiver", bitcoind.params.rpc_socket);
